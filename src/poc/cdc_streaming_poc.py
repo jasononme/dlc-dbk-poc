@@ -68,7 +68,13 @@ def generate_cnx_dlt(table):
         # Initial full-load, won't have `Op` column
         df = df.select(
             col('Op') if 'Op' in df.columns else expr("'' as Op"), 
-            *[c for c in df.columns if c not in {'Op'}], 
+            # expr("iff(Op = 'D', 'DELETE'") if 'Op' in df.columns else expr("'' as Op"), 
+            # For full-load, there is no `transact_seq`, thus, add fake one based on commit time (which is the full-load time for this scenario)
+            # expr(
+            #     "iff(transact_seq is not null and transact_seq != '', transact_seq, date_format(commit_time, 'yyyyMMddhhmmssSSS000000000000000000')) as transact_seq"),
+            col('commit_time'),
+            col('transact_seq'),
+            *[c for c in df.columns if c not in {'Op', 'transact_seq', 'commit_time'}], 
             expr('current_timestamp() as _processing_time'), 
             expr(f"'{tenant_id}' as tenant_id"), 
         )
@@ -96,15 +102,20 @@ def generate_cnx_dlt_merged(table):
     dlt.apply_changes(
         target = sample_table_name_merged,
         source = sample_table_name_source,
-        keys = ["id_"],
+        keys = ["pkid_", "versionid_"],
         #sequence_by = F.col("case when "),
         #sequence_by = expr("(case when updateddate_ is not null then updateddate_ else createddate_ end) as sequence_"),
-        sequence_by = expr("(''||versionid_||'_'||commit_time) as sequence_"),
-        #sequence_by = F.col("commit_time"),
+        # sequence_by = expr("(''||versionid_||'_'||commit_time) as sequence_"),
+        sequence_by = F.col("commit_time"),
+        # sequence_by = F.col("transact_seq"),
+        # sequence_by = expr("(id_||'_'||transact_seq) as sequence_"),
         apply_as_deletes = expr("Op = 'D'"),
         # apply_as_truncates = expr("operation = 'TRUNCATE'"),
         except_column_list = ["Op"],
-        stored_as_scd_type = 1
+        # stored_as_scd_type = 1,
+        stored_as_scd_type = 2,
+        # track_history_column_list=['id_'],
+        track_history_except_column_list=['jsondoc_', 'Op'],
     )
 
 # For debugging
