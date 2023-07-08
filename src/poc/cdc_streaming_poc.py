@@ -4,6 +4,7 @@ import json
 import dlt
 import pyspark.sql.functions as F
 from pyspark.sql.functions import expr, col
+from collections import OrderedDict
 
 
 # COMMAND ----------
@@ -25,6 +26,11 @@ tenant_id_prefix = f'{tenant_id}_' if tenant_id else ''
 table_conf = spark.conf.get("mypipeline.tables", None) or ""
 tables = [t_strip for t in table_conf.split(',') if (t_strip := t.strip())]
 
+table_nested_json = {
+    'entityindustry': ['IndustryCode'], 
+    'upentity': ['Data'],
+}
+
 if not tables: 
     tables = list(default_tables)
 
@@ -38,6 +44,31 @@ def path_exists(path):
             raise
     else: 
         return True
+    
+@dlt.table(name="lookup_customrefdata_input")
+def lookup_customrefdata():
+    schema_file_location = f'{schema_location_root.rstrip("/")}/_{tenant_id_prefix}lookup_customrefdata_input/_dlt{version}'
+    return (
+        spark
+        .readStream
+        .format("cloudFiles")
+        .option("cloudFiles.format", "parquet")
+        .option("cloudFiles.inferColumnTypes", "true")
+        .option("cloudFiles.schemaLocation", schema_file_location)
+        .load("s3://uswe2-ds-apps-internal-301/databricks_poc/connector-samples/jsondatasamples/lookup/lookup_customrefdata")
+        .select("*", F.current_timestamp().alias("time"))
+    )
+
+def resolve_table_file_location(table: str): 
+    return f'{data_file_location_root.rstrip("/")}/{table}/'
+
+def get_json_schema_from_parquet(s3_path: str, column_name: str) -> str:
+    """ Grabs an s3_path of a parquet and column_name then returns a string to define a schema for a json"""
+    return spark.read.parquet(s3_path).select(column_name).head()[0]
+
+def get_json_schema_for_source_table(table_name: str) -> str:
+    s3_path = resolve_table_file_location(table_name)
+    return get_json_schema_from_parquet(s3_path, 'jsondoc_')
 
 def generate_cnx_dlt(table): 
 
@@ -45,7 +76,7 @@ def generate_cnx_dlt(table):
     table_name = f'{table}_input_cdc{version}'
 
     # add tenant portion later
-    table_file_location = f'{data_file_location_root.rstrip("/")}/{table}/'
+    table_file_location = resolve_table_file_location(table)
     exists = path_exists(table_file_location)
     print(f'{table_file_location}: {exists}')
     
@@ -127,6 +158,47 @@ for table in tables_to_merge:
 
 # COMMAND ----------
 
+def expand_creditlens_dataframe_json_field(table): 
+    sample_table_name_merged = f'{table}_input_merged{version}'
+    # df = spark.readStream.format("delta").table(<table_full_name>).alias('o')
+    # df = dlt.read_stream(sample_table_name_merged).alias('o')
+    df = spark.readStream.format("delta").table(f'LIVE.{sample_table_name_merged}').alias('o')
+    # Get json schema for table
+    table_schema = get_json_schema_for_source_table(table)
+    
+    col_alias = []
+    iterim_cols = []
+    index = 0
+    if table in table_nested_json:
+        # Might more than one field - using `.` as delimiter
+        nested_json_fields = table_nested_json[table]
+        nested_json_fields = OrderedDict(zip(nested_json_fields, nested_json_fields))
+        for field in [i for i in nested_json_fields if i]: 
+            
+            iterim_col_alias = f'_{index}'
+            col_iterim_base = F.from_json("o.jsondoc_", F.schema_of_json(table_schema))
+            iterim_col = col_iterim_base
+            field_comps = field.split('.')
+            for item in field_comps: 
+                iterim_col = iterim_col.getItem(item)
+            
+            iterim_col = iterim_col.alias(iterim_col_alias)
+            iterim_cols.append(iterim_col)
+            col_alias.append(iterim_col_alias)
+            index += 1
+    else: 
+        
+        iterim_col_alias = f'_{index}'
+        col_iterim_base = F.from_json("o.jsondoc_", F.schema_of_json(table_schema))
+        iterim_col = col_iterim_base.alias(iterim_col_alias)
+        iterim_cols.append(iterim_col)
+        col_alias.append(iterim_col_alias)
+    
+    return df.select('o.*', *iterim_cols).select('o.*', *[f'{i}.*' for i in col_alias])
+    # return df.select('*', *iterim_cols)
+
+# COMMAND ----------
+
 # This might be used for certain pre-handling
 def generate_cnx_dlt_output(table): 
     sample_table_name_merged = f'{table}_input_merged{version}'
@@ -134,13 +206,29 @@ def generate_cnx_dlt_output(table):
     @dlt.table(name=sample_table_name_output)
     @dlt.expect("valid_op_date", "updateddate_ IS NOT NULL or createddate_ is not null")
     def cnx_dlt_output():
-        return dlt.read_stream(sample_table_name_merged).select('*')
+        # return dlt.read_stream(sample_table_name_merged).select('*')
+        return expand_creditlens_dataframe_json_field(table)
+
 
 # For debugging
 #tables_to_output = ['entity']
 tables_to_output = tables
 for table in tables_to_output: 
     generate_cnx_dlt_output(table)
+
+# COMMAND ----------
+
+# Testing codes for both scenarios: With/Without nested JSON
+# @dlt.table(name='test_expanded_ei')
+# @dlt.expect("valid_op_date", "updateddate_ IS NOT NULL or createddate_ is not null")
+# def json_expanded_dlt():
+#     return expand_creditlens_dataframe_json_field('entityindustry')
+
+# @dlt.table(name='test_expanded_e')
+# @dlt.expect("valid_op_date", "updateddate_ IS NOT NULL or createddate_ is not null")
+# def json_expanded_dlt_e():
+#     return expand_creditlens_dataframe_json_field('entity')
+
 
 # COMMAND ----------
 
