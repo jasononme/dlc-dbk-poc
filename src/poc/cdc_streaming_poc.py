@@ -89,6 +89,8 @@ def get_json_schema_from_parquet(s3_path: str, column_name: str) -> str:
     """ Grabs an s3_path of a parquet and column_name then returns a string to define a schema for a json"""
     # TODO HOW TO make sure it resolve the very latest one or everything? 
     print(f's3_path: {s3_path}')
+    # TODO: Should keep old if there is? Not remove column
+    # TODO Need to see how to expand on-fly, instead restart
     json_value = spark.read.parquet(s3_path).filter(f'{column_name} is not null').sort(col('commit_time').desc()).select(column_name).head()[0]
     # json_value = spark.read.parquet(s3_path).select(column_name).head()[0]
     print(f'json_value[{s3_path}]: {json_value}')
