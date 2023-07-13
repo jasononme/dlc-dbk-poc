@@ -3,7 +3,8 @@ import json
 
 import dlt
 import pyspark.sql.functions as F
-from pyspark.sql.functions import expr, col
+# from pyspark.sql.functions import expr, col
+from pyspark.sql.functions import *
 from collections import OrderedDict
 
 
@@ -137,6 +138,7 @@ def generate_cnx_dlt(table):
                 # # .toTable(f'LIVE.{table_name}')
                 # .start(delta_table_file_location)
                 # .awaitTermination()
+                # .select('*', expr('_metadata.file_name as _ingest_file_name'))
             )
             df_streams.append(df_stream)
             part_index += 1
@@ -176,7 +178,13 @@ def generate_cnx_dlt(table):
 
 # [generate_cnx_dlt(table) for table in tables]
 
-for table in tables: 
+tables_for_cdc = tables
+# For debugging
+# tables_for_cdc = ['entity']
+# tables_for_cdc = ['financialriskcalc']
+# tables_for_cdc = []
+
+for table in tables_for_cdc: 
     generate_cnx_dlt(table)
 
 
@@ -207,7 +215,7 @@ def generate_cnx_dlt_merged(table):
         # sequence_by = expr("(id_||'_'||transact_seq) as sequence_"),
         apply_as_deletes = expr("Op = 'D'"),
         # apply_as_truncates = expr("operation = 'TRUNCATE'"),
-        except_column_list = ["Op"],
+        except_column_list = ["Op", '_rescued_data', 'transact_seq', 'transact_id', '_version_enabled'],
         # stored_as_scd_type = 1,
         stored_as_scd_type = 2,
         # track_history_column_list=['id_'],
@@ -218,6 +226,7 @@ def generate_cnx_dlt_merged(table):
 tables_to_merge = tables
 # For debugging
 # tables_to_merge = ['entity']
+# tables_to_merge = ['financialriskcalc']
 # tables_to_merge = []
 
 for table in tables_to_merge: 
@@ -307,11 +316,68 @@ def generate_cnx_dlt_output(table, streaming=True):
 tables_to_output = tables
 # For debugging
 # tables_to_output = ['entity']
+# tables_to_output = ['financialriskcalc']
 # tables_to_output = []
 
 for table in tables_to_output: 
     # generate_cnx_dlt_output(table, streaming=True)
     generate_cnx_dlt_output(table, False)
+
+# COMMAND ----------
+
+def expand_array_field(table_name, expand_col: str, excluded_cols: list = []):
+    tdf = (
+        dlt.read(table_name)
+        # .read
+        # .format('delta')
+        .filter("id_ = '18|2'")
+    )
+
+    expand_col = expand_col.strip() if isinstance(expand_col, str) and expand_col else ''
+    excluded_cols = set(excluded_cols) if isinstance(excluded_cols, list) else set()
+    if excluded_cols:
+        if expand_col: 
+            excluded_cols.remove(expand_col)
+
+        tdf = tdf.select(*[c for c in tdf.columns if c not in excluded_cols])
+    
+    if expand_col: 
+        tdf = (
+            tdf
+            .select(*[c for c in tdf.columns if c not in [expand_col]], explode(expand_col).alias(expand_col))
+        )
+        
+        sub_fields = []
+        field_name = expand_col
+        for sf in tdf.schema[field_name].dataType: 
+            sub_field_alias = F.col(f'{field_name}.{sf.name}').alias(f'{expand_col}_{sf.name}')
+            sub_fields.append(sub_field_alias)
+
+        column_schema = F.struct(*sub_fields)
+        print(column_schema)
+        tdf = tdf.withColumn(expand_col, column_schema)
+        
+        tdf = (
+            tdf
+            .select('*', f'{expand_col}.*')
+            .drop(expand_col)
+        )
+
+    return tdf
+
+# COMMAND ----------
+
+riskcalc_base_table = 'financialriskcalc'
+riskcalc_output_table = f'{riskcalc_base_table}_silver'
+
+@dlt.table(name='financialriskcalcinputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+def split_financialriskcalinputs():
+    return expand_array_field(riskcalc_output_table, 'RiskCalcInPut', ['RiskCalcOutPut', 'RiskCalcInPut', 'RiskCalcEDFNote'])
+
+
+@dlt.table(name='financialriskcalcoutputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+def split_financialriskcalinputs():
+    return expand_array_field(riskcalc_output_table, 'RiskCalcOutPut', ['RiskCalcOutPut', 'RiskCalcInPut', 'RiskCalcEDFNote'])
 
 # COMMAND ----------
 
@@ -348,7 +414,7 @@ for table in tables_to_output:
 
 
 spark.conf.set("spark.sql.legacy.timeParserPolicy","LEGACY")
-@dlt.table(name=f'entityReference{version}')
+# @dlt.table(name=f'entityReference{version}')
 def entityReference_final():
     return spark.sql("""
     SELECT DISTINCT
@@ -487,3 +553,8 @@ def entityReference_final():
     """)
     
     # .withWatermark("time", "1 minutes").groupBy("time").count()
+
+# COMMAND ----------
+
+# 
+
