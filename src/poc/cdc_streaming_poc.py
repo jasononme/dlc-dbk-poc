@@ -53,7 +53,7 @@ def path_exists(path):
     else: 
         return True
     
-@dlt.table(name="lookup_customrefdata_input_landing")
+@dlt.table(name="raw.lookup_customrefdata_input_landing")
 def lookup_customrefdata_streaming():
     schema_file_location = f'{schema_location_root.rstrip("/")}/_{tenant_id_prefix}lookup_customrefdata_input/_dlt{version}'
     delta_table_file_location = f'{table_data_location_root.rstrip("/")}/_{tenant_id_prefix}lookup_customrefdata_input/_dlt{version}'
@@ -79,9 +79,9 @@ def lookup_customrefdata_streaming():
     )
 
 
-@dlt.table(name="lookup_customrefdata_input", spark_conf={"pipelines.trigger.interval" : "30 seconds"})
+@dlt.table(name="silver.lookup_customrefdata_input", spark_conf={"pipelines.trigger.interval" : "30 seconds"})
 def lookup_customrefdata():
-    return dlt.read('lookup_customrefdata_input_landing')
+    return dlt.read('raw.lookup_customrefdata_input_landing')
 
 def resolve_table_file_location(table: str, history=False): 
     return f'{data_file_location_root.rstrip("/")}/{table}{"hist" if history else ""}/'
@@ -105,7 +105,7 @@ def get_json_schema_for_source_table(table_name: str) -> str:
 def generate_cnx_dlt(table): 
 
     # table_name = f'{tenant_id_prefix}{table}_input_cdc{version}'
-    table_name = f'{table}_input_cdc{version}'
+    table_name = f'raw.{table}_input_cdc{version}'
 
     # add tenant portion later
     # table_hist = resolve_table_file_location(table, history=True)
@@ -198,8 +198,8 @@ def upsertToDelta(microBatchOutputDF, batchId):
 
 
 def generate_cnx_dlt_merged(table): 
-    sample_table_name_source = f'{table}_input_cdc{version}'
-    sample_table_name_merged = f'{table}_input_merged{version}'
+    sample_table_name_source = f'raw.{table}_input_cdc{version}'
+    sample_table_name_merged = f'bronze.{table}_input_merged{version}'
     dlt.create_streaming_table(sample_table_name_merged)
 
     dlt.apply_changes(
@@ -236,7 +236,7 @@ for table in tables_to_merge:
 
 
 def expand_creditlens_dataframe_json_field(table, streaming=True): 
-    sample_table_name_merged = f'{table}_input_merged{version}'
+    sample_table_name_merged = f'bronze.{table}_input_merged{version}'
     # df = spark.readStream.format("delta").table(<table_full_name>).alias('o')
     # df = dlt.read_stream(sample_table_name_merged).alias('o')
     if streaming: 
@@ -298,9 +298,9 @@ def expand_creditlens_dataframe_json_field(table, streaming=True):
 
 # This might be used for certain pre-handling
 def generate_cnx_dlt_output(table, streaming=True): 
-    sample_table_name_merged = f'{table}_input_merged{version}'
+    sample_table_name_merged = f'bronze.{table}_input_merged{version}'
     # sample_table_name_output = f'{table}_output{version}'
-    sample_table_name_output = f'{table}_silver_s' if streaming else f'{table}_silver'
+    sample_table_name_output = f'silver.{table}_silver_s' if streaming else f'silver.{table}_silver'
     tbl_extra_config = {}
     if not streaming: 
         tbl_extra_config.update({ 
@@ -330,7 +330,7 @@ def expand_array_field(table_name, expand_col: str, excluded_cols: list = []):
         dlt.read(table_name)
         # .read
         # .format('delta')
-        .filter("id_ = '18|2'")
+        # .filter("id_ = '18|2'")
     )
 
     expand_col = expand_col.strip() if isinstance(expand_col, str) and expand_col else ''
@@ -368,16 +368,24 @@ def expand_array_field(table_name, expand_col: str, excluded_cols: list = []):
 # COMMAND ----------
 
 riskcalc_base_table = 'financialriskcalc'
-riskcalc_output_table = f'{riskcalc_base_table}_silver'
+riskcalc_output_table = f'silver.{riskcalc_base_table}_silver'
 
-@dlt.table(name='financialriskcalcinputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+@dlt.table(name='silver.financialriskcalcinputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
 def split_financialriskcalinputs():
     return expand_array_field(riskcalc_output_table, 'RiskCalcInPut', ['RiskCalcOutPut', 'RiskCalcInPut', 'RiskCalcEDFNote'])
 
 
-@dlt.table(name='financialriskcalcoutputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+@dlt.table(name='silver.financialriskcalcoutputs', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
 def split_financialriskcalinputs():
     return expand_array_field(riskcalc_output_table, 'RiskCalcOutPut', ['RiskCalcOutPut', 'RiskCalcInPut', 'RiskCalcEDFNote'])
+
+# COMMAND ----------
+
+ratingscenarioblockdata_base_table = 'ratingscenarioblockdata'
+ratingscenarioblockdata_output_table = f'silver.{ratingscenarioblockdata_base_table}_silver'
+@dlt.table(name='silver.ratingblockpindatum_silver', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+def split_financialriskcalinputs():
+    return expand_array_field(ratingscenarioblockdata_output_table, 'RatingBlockPinDatum', ['RatingBlockPinDatum'])
 
 # COMMAND ----------
 
@@ -414,7 +422,7 @@ def split_financialriskcalinputs():
 
 
 spark.conf.set("spark.sql.legacy.timeParserPolicy","LEGACY")
-# @dlt.table(name=f'entityReference{version}')
+@dlt.table(name=f'entityReference{version}')
 def entityReference_final():
     return spark.sql("""
     SELECT DISTINCT
@@ -474,7 +482,7 @@ def entityReference_final():
             tenant_id as tenantIdentifier, 
             time
         FROM
-            LIVE.entity_silver
+            LIVE.silver.entity_silver
         WHERE
             islatestversion_ = 'true'
         AND
@@ -489,7 +497,7 @@ def entityReference_final():
         SELECT
             *
         FROM
-            LIVE.entityindustry_silver
+            LIVE.silver.entityindustry_silver
         WHERE
             islatestversion_ = 'true'
         AND
@@ -508,7 +516,7 @@ def entityReference_final():
     -- AND
     --     entity.time <= ei.time + interval 1 hour
     LEFT JOIN
-        LIVE.financial_silver f
+        LIVE.silver.financial_silver f
     ON
         entity.entityIdentifier = f.fkid_entity
         AND
@@ -530,7 +538,7 @@ def entityReference_final():
         SELECT
             *
         FROM
-            LIVE.upentity_silver
+            LIVE.silver.upentity_silver
     ) ue
     ON
         entity.entityIdentifier = ue.entityid
@@ -539,7 +547,7 @@ def entityReference_final():
     -- AND
     --     entity.time <= ue.time + interval 1 hour
     LEFT JOIN
-        LIVE.lookup_customrefdata_input entitytypelookup
+        LIVE.silver.lookup_customrefdata_input entitytypelookup
     ON
         entitytypelookup.MapType = 'ENTITYTYPEREFVALUE'
     AND
