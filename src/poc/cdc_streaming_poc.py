@@ -65,6 +65,7 @@ def lookup_customrefdata_streaming():
         .format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.inferColumnTypes", "true")
+        .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
         .option("cloudFiles.schemaLocation", schema_file_location)
         # .load("s3://uswe2-ds-apps-internal-301/databricks_poc/connector-samples/jsondatasamples/lookup/lookup_customrefdata")
         .load("s3://uswe2-ds-apps-internal-301/databricks_poc/connector-samples/cl_cdc/extra_data/lookup/v1/lookup_customrefdata")
@@ -291,7 +292,8 @@ def expand_creditlens_dataframe_json_field(table, streaming=True):
         col_alias.append(iterim_col_alias)
     
     # TODO: Need to see how to update the change part? Based on SCD2?
-    return df.select('o.*', *iterim_cols).select('o.*', *[f'{i}.*' for i in col_alias], F.current_timestamp().alias("time")).drop('Associations_', 'jsondoc_')
+    # return df.select('o.*', *iterim_cols).select('o.*', *[f'{i}.*' for i in col_alias], F.current_timestamp().alias("time")).drop('Associations_', 'jsondoc_')
+    return df.select('o.*', *iterim_cols).select('o.*', *[f'{i}.*' for i in col_alias], col('commit_time').alias("time")).drop('Associations_', 'jsondoc_')
     # return df.select('*', *iterim_cols)
 
 # COMMAND ----------
@@ -344,7 +346,7 @@ def expand_array_field(table_name, expand_col: str, excluded_cols: list = []):
     if expand_col: 
         tdf = (
             tdf
-            .select(*[c for c in tdf.columns if c not in [expand_col]], explode(expand_col).alias(expand_col))
+            .select('id_', explode(expand_col).alias(expand_col), *[c for c in tdf.columns if c not in [expand_col, 'id_']])
         )
         
         sub_fields = []
@@ -364,6 +366,21 @@ def expand_array_field(table_name, expand_col: str, excluded_cols: list = []):
         )
 
     return tdf
+
+# COMMAND ----------
+
+historicalstatement_base_table = 'historicalstatement'
+historicalstatement_output_table = f'silver.{historicalstatement_base_table}_silver'
+
+excluded_hisstat_columns = ['AuditMethod', 'CashFlowReconcileId', 'ComplianceBalance', 'Consolidation', 'CpLtd', 'CtaUseAutoAdj', 'CtaUseManualAdj', 'Duplicates', 'FinTemplateId', 'FinancialId', 'Flags', 'NeedsRecalc', 'Periods', 'Restated', 'RpLtdItd', 'StatementDate', 'StatementId', 'StatementType', 'Status', 'TotalDebtService']
+
+@dlt.table(name='silver.histstmtconstant_silver', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+def extract_histstmtconstant():
+    return expand_array_field(historicalstatement_output_table, 'StatementConstant', ['StatementConstant', 'AccountBalance', *excluded_hisstat_columns])
+
+@dlt.table(name='silver.histstmtbalance_silver', spark_conf={"pipelines.trigger.interval" : "5 seconds"})
+def extract_histstmtbalance():
+    return expand_array_field(historicalstatement_output_table, 'AccountBalance', ['StatementConstant', 'AccountBalance', *excluded_hisstat_columns])
 
 # COMMAND ----------
 
